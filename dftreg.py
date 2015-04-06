@@ -29,14 +29,14 @@ def register(input_array, upsample_factor=1, num_images_for_mean=100,
     Parameters
     ----------
     input array : np.ndarray
-        the frames the align
+        the frames to align
     upsample : int
         upsample factor. final pixel alignment has resolution of
         1/upsample_factor. if 1 only pixel level shifts are made, no
         interpolation (optional, default=1)
     num_images_for_mean : int
         number of images to use to make the aligned mean image (optional,
-            default=100)
+        default=100)
     randomise_frames : bool
         randomise the images selected to make the mean image? if false the
         first 'num_frames_for_mean' frames will be used (optional,
