@@ -1,14 +1,14 @@
 """
-Motion correction of image sequences by 'efficient subpixel image
-registration by cross correlation'. The reference image is iteratively
-computed by aligning and averaging a subset of images/frames.
+Motion correction of image sequences by 'efficient subpixel image registration
+by cross correlation'. A reference image is iteratively computed by aligning
+and averaging a subset of images/frames.
 Lloyd Russell 2015
-******************************************************************
-Majority of code from skimage.feature.register_translation, which
-itself is a port of MATLAB code by Manuel Guizar-Sicairos,
-Samuel T. Thurman, and James R. Fienup, "Efficient subpixel
-image registration algorithms," Optics Letters 33, 156-158 (2008).
-******************************************************************
+*******************************************************************************
+Majority of code from skimage.feature.register_translation, which itself is a
+port of MATLAB code by Manuel Guizar-Sicairos, Samuel T. Thurman, and James R.
+Fienup, "Efficient subpixel image registration algorithms," Optics Letters 33,
+156-158 (2008).
+*******************************************************************************
 """
 
 import numpy as np
@@ -19,12 +19,11 @@ import time
 
 
 def register(input_array, upsample_factor=1, num_images_for_mean=100,
-    randomise_frames=True, err_thresh=0.02, max_iterations=5, use_fftw=False,
-    rotation_scaling=False, save=False, save_fmt='mptiff', save_name='none',
-    nprocesses=1, verbose=False):
+             randomise_frames=True, err_thresh=0.02, max_iterations=5,
+             use_fftw=False, rotation_scaling=False, save=False,
+             save_fmt='mptiff', save_name='none', nprocesses=1, verbose=False):
     """
     Master function. Establish parameters. Make aligned mean image. Register
-
     each frame in input array to aligned mean image.
 
     Parameters
@@ -32,46 +31,49 @@ def register(input_array, upsample_factor=1, num_images_for_mean=100,
     input array : np.ndarray
         the frames the align
     upsample : int
-        upsample factor. final pixel alignment has resolution of 1/upsample_factor.
-        if 1 only pixel level shifts are made, no interpolation (optional, default=1)
+        upsample factor. final pixel alignment has resolution of
+        1/upsample_factor. if 1 only pixel level shifts are made, no
+        interpolation (optional, default=1)
     num_images_for_mean : int
-        number of images to use to make the aligned mean image (optional, default=100)
+        number of images to use to make the aligned mean image (optional,
+            default=100)
     randomise_frames : bool
-        randomise the images selected to make the mean image? if false the first
-        'num_frames_for_mean' frames will be used (optional, default=True)
+        randomise the images selected to make the mean image? if false the
+        first 'num_frames_for_mean' frames will be used (optional,
+        default=True)
     err_thresh : float
-        the error threshold level at which to stop iterating over the mean image
-        alignment (optional, default=0.02)
+        the error threshold level at which to stop iterating over the mean
+        image alignment (optional, default=0.02)
     max_iterations : int
         the maximum number of iterations to compute the aligned mean image
         (optional, default=5)
     use_fftw : bool
-        choose whether to use fftw methods (slightly faster) requires PyFFTW3. if
-        false, will use numpy methods. (optional, default=False)
+        choose whether to use fftw methods (slightly faster) requires PyFFTW3.
+        if false, will use numpy methods. (optional, default=False)
     rotation_scaling : bool
         not yet implemented. (optional, default=false)
     save : bool
-        choose whether to save the final registered array of images to disk from
-        within method (optional, default=False)
+        choose whether to save the final registered array of images to disk
+        from within method (optional, default=False)
     save_name : string
         the filename for saved file (optional, default='none')
     save_fmt : string
-        the tiff format to save as. options include 'mptiff', 'bigtiff', 'singles'
-        (optional, default='mptiff'
+        the tiff format to save as. options include 'mptiff', 'bigtiff',
+        'singles' (optional, default='mptiff'
     nprocesses : int or 'auto'
-        number of workers to use (multiprocessing). if 'auto' number of workers is
-        number of cpus. (optional, default=1)
+        number of workers to use (multiprocessing). if 'auto' number of workers
+        is number of cpus. (optional, default=1)
     verbose : bool
         enable verbose mode (optional, default:False)
 
     Returns
     -------
     dx : float array
-        horizontal pixel offsets. shift the target image by this amount to align
-        with reference
+        horizontal pixel offsets. shift the target image by this amount to
+        align with reference
     dy : float array
-        vertical pixel offsets. shift the target image by this amount to align with
-        reference
+        vertical pixel offsets. shift the target image by this amount to align
+        with reference
     registered_frames : np.ndarray
         the aligned frames
     """
@@ -157,9 +159,8 @@ def _configure(input_array, use_fftw=False, verbose=False, nprocesses=1):
     im_dtype = input_array.dtype
 
 
-def _make_mean_img(input_array, num_images_for_mean=100,
-    randomise_frames=True, err_thresh=0.02, max_iterations=5,
-    upsample_factor=10):
+def _make_mean_img(input_array, num_images_for_mean=100, randomise_frames=True,
+                   err_thresh=0.02, max_iterations=5, upsample_factor=10):
     """
     Make an aligned mean image to use as reference to which all frames are
     later aligned.
@@ -206,8 +207,8 @@ def _make_mean_img(input_array, num_images_for_mean=100,
     while mean_img_err > err_thresh and iteration < max_iterations:
         # configure pool of workers (multiprocessing)
         pool = mp.Pool(nworkers)
-        map_func = partial(
-            _register_frame, mean_img=mean_img, upsample_factor=upsample_factor)
+        map_func = partial(_register_frame, mean_img=mean_img,
+                           upsample_factor=upsample_factor)
         results = pool.map(map_func, frames_for_mean)
         pool.close()
         pool.join()
@@ -314,17 +315,20 @@ def _get_ffts(use_fftw=False, nthreads=1,):
             def fftn(array, nthreads=1):
                 array = array.astype('complex').copy()
                 outarray = array.copy()
-                fft_forward = fftw3.Plan(array, outarray, direction='forward',
-                                         flags=['estimate'], nthreads=nthreads)
+                fft_forward = fftw3.Plan(array, outarray,
+                                         direction='forward',
+                                         flags=['estimate'],
+                                         nthreads=nthreads)
                 fft_forward.execute()
-
                 return outarray
 
             def ifftn(array, nthreads=1):
                 array = array.astype('complex').copy()
                 outarray = array.copy()
-                fft_backward = fftw3.Plan(array, outarray, direction='backward',
-                                          flags=['estimate'], nthreads=nthreads)
+                fft_backward = fftw3.Plan(array, outarray,
+                                          direction='backward',
+                                          flags=['estimate'],
+                                          nthreads=nthreads)
                 fft_backward.execute()
                 return outarray / np.size(array)
             if verbose_state:
@@ -597,5 +601,4 @@ def _save_registered_frames(input_array, save_name, save_fmt):
     if save_fmt == 'mptiff':
         tifffile.imsave(save_name + '_DFTreg.tif', input_array)
     elif save_fmt == 'bigtiff':
-        tifffile.imsave(save_name + '_DFTreg.tif', input_array,
-            bigtiff=True)
+        tifffile.imsave(save_name + '_DFTreg.tif', input_array, bigtiff=True)
