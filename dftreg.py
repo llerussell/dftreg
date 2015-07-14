@@ -2,70 +2,86 @@
 Motion correction of image sequences by 'efficient subpixel image registration
 by cross correlation'. A reference image is iteratively computed by aligning
 and averaging a subset of images/frames.
-Lloyd Russell 2015
+2015 Lloyd Russell, Christoph Schmidt-Hieber
 *******************************************************************************
-Majority of code from skimage.feature.register_translation, which itself is a
-port of MATLAB code by Manuel Guizar-Sicairos, Samuel T. Thurman, and James R.
-Fienup, "Efficient subpixel image registration algorithms," Optics Letters 33,
-156-158 (2008).
+Credit to Marius Pachitariu for concept of registering to aligned mean image.
+Parts of the code are based on:
+skimage.feature.register_translation, which is a port of MATLAB code by Manuel
+Guizar-Sicairos, Samuel T. Thurman, and James R. Fienup, "Efficient subpixel
+image registration algorithms," Optics Letters 33, 156-158 (2008).
+Relating to implementation of skimage.feature.register_translation:
+Copyright (C) 2011, the scikit-image team
+All rights reserved.
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ''AS IS'' AND ANY EXPRESS OR IMPLIED
+WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+OF SUCH DAMAGE.
 *******************************************************************************
+@author: llerussell
 """
 
-import numpy as np
-import multiprocessing as mp
-from scipy.ndimage.interpolation import shift
+from __future__ import absolute_import, division
+from builtins import map, range
 from functools import partial
+import multiprocessing
+import numpy as np
+from scipy.ndimage.interpolation import shift
 import time
+try:
+    from pyfftw.interfaces.numpy_fft import fftn, ifftn
+except ImportError:
+    from np.fft import fftn, ifftn
+    print('dftreg: pyfftw not found, using numpy fft instead')
 
 
-def register(input_array, upsample_factor=1, num_images_for_mean=100,
-             randomise_frames=True, err_thresh=0.02, max_iterations=5,
-             use_fftw=False, rotation_scaling=False, save=False,
-             save_fmt='mptiff', save_name='none', nprocesses=1, verbose=False):
+def register(frames, upsample_factor=10, max_displacement=None,
+             num_frames_for_mean=100, randomise_frames_for_mean=True,
+             err_thresh=0.01, max_iterations_for_mean=5,
+             rotation_scaling=False, save_name=None, save_fmt='bigtiff',
+             n_processes='auto', verbose=True, return_registered=True):
     """
-    Master function. Establish parameters. Make aligned mean image. Register
-    each frame in input array to aligned mean image.
-
+    Master function. Make aligned mean image. Register each frame in input
+    array to aligned mean image.
     Parameters
     ----------
-    input array : np.ndarray
-        the frames to align
-    upsample : int
+    frames : np.ndarray
+        the frames to align (shape: frames, rows, columns)
+    upsample : int, optional
         upsample factor. final pixel alignment has resolution of
-        1/upsample_factor. if 1 only pixel level shifts are made, no
-        interpolation (optional, default=1)
-    num_images_for_mean : int
-        number of images to use to make the aligned mean image (optional,
-        default=100)
-    randomise_frames : bool
+        1/upsample_factor. if 1 only pixel level shifts are made - faster -
+        and no interpolation. Default: 10.
+    num_frames_for_mean : int, optional
+        number of frames to use to make the aligned mean image. Default: 100.
+    randomise_frames_for_mean : bool, optional
         randomise the images selected to make the mean image? if false the
-        first 'num_frames_for_mean' frames will be used (optional,
-        default=True)
-    err_thresh : float
-        the error threshold level at which to stop iterating over the mean
-        image alignment (optional, default=0.02)
-    max_iterations : int
-        the maximum number of iterations to compute the aligned mean image
-        (optional, default=5)
-    use_fftw : bool
-        choose whether to use fftw methods (slightly faster) requires PyFFTW3.
-        if false, will use numpy methods. (optional, default=False)
-    rotation_scaling : bool
-        not yet implemented. (optional, default=false)
-    save : bool
-        choose whether to save the final registered array of images to disk
-        from within method (optional, default=False)
-    save_name : string
-        the filename for saved file (optional, default='none')
-    save_fmt : string
+        first 'num_frames_for_mean' frames will be used. Default: True.
+    err_thresh : float, optional
+        the threshold of mean pixel offset at which to stop aligning the mean
+        image. Default: 0.01.
+    max_iterations_for_mean : int, optional
+        the maximum number of iterations to compute the aligned mean image.
+        Default: 5.
+    rotation_scaling : bool, optional
+        not yet implemented. Default: False.
+    save_name : string, optional
+        the file name for saving the final registered array of images to disk
+        from within method. If None or 'none', the array will not be saved.
+        Default: None.
+    save_fmt : string, optional
         the tiff format to save as. options include 'mptiff', 'bigtiff',
-        'singles' (optional, default='mptiff'
-    nprocesses : int or 'auto'
-        number of workers to use (multiprocessing). if 'auto' number of workers
-        is number of cpus. (optional, default=1)
-    verbose : bool
-        enable verbose mode (optional, default:False)
-
+        'singles'. Default: 'bigtiff'
+    n_processes : int or 'auto', optional
+        number of workers to use (multiprocessing). Default: 'auto'.
+    verbose : bool, optional
+        enable verbose mode. Default: True.
+    return_registered : bool, optional
+        return registered frames? Default: True.
     Returns
     -------
     dx : float array
@@ -77,168 +93,168 @@ def register(input_array, upsample_factor=1, num_images_for_mean=100,
     registered_frames : np.ndarray
         the aligned frames
     """
+    if n_processes == 'auto':
+        n_processes = multiprocessing.cpu_count()
+    if verbose:
+        print('Using ' + str(n_processes) + ' worker(s)')
 
     # start timer
     t0 = time.time()
 
-    # configure settings and get image parameters
-    _configure(input_array, use_fftw=use_fftw,
-               verbose=verbose, nprocesses=nprocesses)
-
     # make a mean image
-    mean_img = _make_mean_img(input_array,
-                              num_images_for_mean=num_images_for_mean,
-                              randomise_frames=randomise_frames,
-                              err_thresh=err_thresh,
-                              max_iterations=max_iterations,
-                              upsample_factor=upsample_factor)
+    mean_img = _make_mean_img(frames,
+                          num_frames_for_mean=num_frames_for_mean,
+                          randomise_frames_for_mean=randomise_frames_for_mean,
+                          err_thresh=err_thresh,
+                          max_iterations_for_mean=max_iterations_for_mean,
+                          upsample_factor=upsample_factor,
+                          n_processes=n_processes,
+                          max_displacement=max_displacement,
+                          verbose=verbose)
     e1 = time.time() - t0
-    if verbose_state:
-        print('    Time taken: ' + str(e1) + ' s')
+    if verbose:
+        print('        Time taken: ' + str(e1) + ' s')
 
     # register all frames
-    dx, dy, registered_frames = _register_all_frames(
-        input_array, mean_img, upsample_factor=upsample_factor)
+    output = _register_all_frames(frames, mean_img,
+                                  upsample_factor=upsample_factor,
+                                  n_processes=n_processes,
+                                  max_displacement=max_displacement,
+                                  verbose=verbose,
+                                  return_registered=return_registered)
+
+    # sort results
+    if return_registered:
+        dy, dx, registered_frames = output
+    else:
+        dy, dx = output
+
     e2 = time.time() - t0 - e1
-    if verbose_state:
-        print('    Time taken: ' + str(e2) + ' s')
+    if verbose:
+        print('        Time taken: ' + str(e2) + ' s')
 
     # save?
-    if save:
-        _save_registered_frames(registered_frames, save_name, save_fmt)
-        e3 = time.time() - t0 - e1 - e2
-        if verbose_state:
-            print('    Time taken: ' + str(e3) + ' s')
+    if return_registered:
+        if save_name is not None and save_name != 'none':
+            _save_registered_frames(registered_frames, save_name, save_fmt,
+                                    verbose=verbose)
+            e3 = time.time() - t0 - e1 - e2
+            if verbose:
+                print('        Time taken: ' + str(e3) + ' s')
 
     total_time = time.time() - t0
-    if verbose_state:
-        print('Completed in: ' + str(total_time) + ' s')
-
-    return dx, dy, registered_frames
-
-
-def _configure(input_array, use_fftw=False, verbose=False, nprocesses=1):
-    """
-    Setup. Decide how many workers to use (multiprocessing), which fft methods
-    to use and get details of the input images
-    Lloyd Russell 2015
-    Parameters
-    ----------
-    input_array : array
-    use_fftw : bool
-    upsample_val : int
-    verbose : bool
-
-    Returns
-    -------
-    None. But sets globals...
-    """
-    # define globals
-    global fftn, ifftn, im_dim, im_dtype, nworkers, verbose_state
-
-    # verbose mode?
     if verbose:
-        verbose_state = True
+        print('    Completed in: ' + str(total_time) + ' s')
 
-    # workers
-    if nprocesses == 'auto':
-        nworkers = mp.cpu_count()
+    if return_registered:
+        return dy, dx, registered_frames
     else:
-        nworkers = nprocesses
-    if verbose_state:
-        print('Using ' + str(nworkers) + ' workers')
-
-    # num threads
-    nthreads = 1
-
-    # get fft methods
-    fftn, ifftn = _get_ffts(use_fftw=use_fftw, nthreads=nthreads)
-
-    # get image details
-    im_dim = input_array.shape
-    im_dtype = input_array.dtype
+        return dy, dx
 
 
-def _make_mean_img(input_array, num_images_for_mean=100, randomise_frames=True,
-                   err_thresh=0.02, max_iterations=5, upsample_factor=10):
+def _make_mean_img(frames, num_frames_for_mean=100, randomise_frames_for_mean=True,
+                   err_thresh=0.01, max_iterations_for_mean=5, upsample_factor=1,
+                   n_processes=1, max_displacement=None, verbose=False):
     """
     Make an aligned mean image to use as reference to which all frames are
     later aligned.
     Parameters
     ----------
-    num_images_for_mean : int
-        how many images are used to make the mean reference image
-        (default=100)
-    randomise_frames : bool
+    frames : np.ndarray
+        the frames to align (shape: frames, 1, rows, columns)
+    num_frames_for_mean : int, optional
+        how many images are used to make the mean reference image.
+        Default: 100.
+    randomise_frames_for_mean : bool, optional
         randomise the frames used to make the mean image? If False the first
-        N images are used (default = True)
-    err_thresh : float
+        N images are used Default: True.
+    err_thresh : float, optional
         the threshold of mean pixel offset at which to stop aligning the mean
-        image (default = 0.02)
-    max_iterations : int
+        image. Default: 0.01.
+    max_iterations_for_mean : int, optional
         number of maximum iterations, if error threshold is never met
-        (default = 5)
+        Default: 5.
+    n_processes : int, optional
+        number of processes to work on the registration in parallel
+        Default: 1
     Returns
     -------
     mean_img : np.ndarray (size of input images)
         the final aligned mean image
     """
 
-    if num_images_for_mean > im_dim[0]:
-        num_images_for_mean = im_dim[0]
+    input_shape = frames.shape
+    input_dtype = np.array(frames[0]).dtype
 
-    if randomise_frames:
-        if verbose_state:
-            print('Making aligned mean image from ' +
-                  str(num_images_for_mean) + ' random frames...')
-        frames_for_mean = [input_array[idx] for idx in np.random.choice(
-            im_dim[0], size=num_images_for_mean, replace=False)]
+    if num_frames_for_mean > input_shape[0]:
+        num_frames_for_mean = input_shape[0]
+
+    frames_for_mean = np.zeros([num_frames_for_mean, input_shape[1],
+                               input_shape[2]], dtype=input_dtype)
+
+    if randomise_frames_for_mean:
+        if verbose:
+            print('    Making aligned mean image from ' +
+                  str(num_frames_for_mean) + ' random frames...')
+
+        for idx, frame_num in enumerate(np.random.choice(input_shape[0],
+                                        size=num_frames_for_mean,
+                                        replace=False)):
+            frames_for_mean[idx] = frames[frame_num]
+
     else:
-        if verbose_state:
-            print('Making aligned mean image from first ' +
-                  str(num_images_for_mean) + ' frames...')
-        frames_for_mean = [input_array[idx]
-                           for idx in range(num_images_for_mean)]
+        if verbose:
+            print('    Making aligned mean image from first ' +
+                  str(num_frames_for_mean) + ' frames...')
+        frames_for_mean = frames[0:num_frames_for_mean]
 
     mean_img = np.mean(frames_for_mean, 0)
-    iteration = 0
+    iteration = 1
     mean_img_err = 9999
-    # not final
-    while mean_img_err > err_thresh and iteration < max_iterations:
-        # configure pool of workers (multiprocessing)
-        pool = mp.Pool(nworkers)
-        map_func = partial(_register_frame, mean_img=mean_img,
-                           upsample_factor=upsample_factor)
-        results = pool.map(map_func, frames_for_mean)
-        pool.close()
-        pool.join()
+
+    while mean_img_err > err_thresh and iteration < max_iterations_for_mean:
+        map_function = partial(_register_frame, mean_img=mean_img,
+                               upsample_factor=upsample_factor,
+                               max_displacement=max_displacement,
+                               return_registered=True)
+
+        if n_processes > 1:
+            # configure pool of workers (multiprocessing)
+            pool = multiprocessing.Pool(n_processes)
+            results = pool.map(map_function, frames_for_mean)
+            pool.close()
+        else:
+            results = map(map_function, frames_for_mean)
 
         # preallocate the results array
-        mean_img_dx = np.zeros(num_images_for_mean, dtype=np.float)
-        mean_img_dy = np.zeros(num_images_for_mean, dtype=np.float)
+        mean_img_dx = np.zeros(num_frames_for_mean, dtype=np.float)
+        mean_img_dy = np.zeros(num_frames_for_mean, dtype=np.float)
 
-        # get results (0: dx, 1: dy, 2: registered image)
+        # get results (0: dy, 1: dx, 2: registered image)
         for idx, result in enumerate(results):
-            mean_img_dx[idx] = result[0]
-            mean_img_dy[idx] = result[1]
-            # overwrite the temp array of frames used to make mean image
+            mean_img_dy[idx] = result[0]
+            mean_img_dx[idx] = result[1]
             frames_for_mean[idx] = result[2]
+
         # make the new (improved) mean image
         mean_img = np.mean(frames_for_mean, 0)
         mean_img_err = np.mean(
             np.absolute(mean_img_dx)) + np.mean(np.absolute(mean_img_dy))
 
-        if verbose_state:
-            print('    Iteration ' + str(iteration + 1) +
+        if verbose:
+            print('        Iteration ' + str(iteration) +
                   ', average error: ' + str(mean_img_err) + ' pixels')
         iteration += 1
 
     return mean_img
 
 
-def _register_all_frames(input_array, mean_img, upsample_factor=10):
+def _register_all_frames(frames, mean_img, upsample_factor=1,
+                         n_processes=1, max_displacement=None,
+                         return_registered=False,
+                         verbose=False):
     """
-    Register all input frames to the aligned mean image.
+    Register all input frames to the computed aligned mean image.
     Returns
     -------
     dx : float array
@@ -247,102 +263,80 @@ def _register_all_frames(input_array, mean_img, upsample_factor=10):
         array of y pixel offsets for each frame
     registered_frames : np.ndarray (size of input images)
         array containing each aligned frame
+    n_processes : int, optional
+        number of processes to work on the registration in parallel
     """
-    if verbose_state:
-        print('Registering all ' + str(im_dim[0]) + ' frames...')
+    input_shape = frames.shape
+    input_dtype = np.array(frames[0]).dtype
 
-    # configure pool of workers (multiprocessing)
-    pool = mp.Pool(nworkers)
-    map_func = partial(
-        _register_frame, mean_img=mean_img, upsample_factor=upsample_factor)
-    results = pool.map(map_func, input_array)
-    pool.close()
-    pool.join()
+    if verbose:
+        print('    Registering all ' + str(frames.shape[0]) + ' frames...')
+
+    map_function = partial(_register_frame, mean_img=mean_img,
+                           upsample_factor=upsample_factor,
+                           max_displacement=max_displacement,
+                           return_registered=return_registered)
+
+    if n_processes > 1:
+        # configure pool of workers (multiprocessing)
+        pool = multiprocessing.Pool(n_processes)
+        results = pool.map(map_function, frames)
+        pool.close()
+    else:
+        results = map(map_function, frames)
 
     # preallocate arrays
-    dx = np.zeros(im_dim[0], dtype=np.float)
-    dy = np.zeros(im_dim[0], dtype=np.float)
-    registered_frames = np.zeros(im_dim, dtype=im_dtype)
+    dx = np.zeros(input_shape[0], dtype=np.float)
+    dy = np.zeros(input_shape[0], dtype=np.float)
 
-    # get results (0: dx, 1: dy, 2: registered image)
-    for idx, result in enumerate(results):
-        dx[idx] = result[0]
-        dy[idx] = result[1]
-        registered_frames[idx] = result[2]
+    if return_registered:
+        registered_frames = np.zeros([input_shape[0], input_shape[1],
+                                     input_shape[2]], dtype=input_dtype)
 
-    return dx, dy, registered_frames
+        # get results (0: dy, 1: dx, 2: registered image)
+        for idx, result in enumerate(results):
+            dy[idx] = result[0]
+            dx[idx] = result[1]
+            registered_frames[idx] = result[2]
+        return dy, dx, registered_frames
+
+    else:
+        # get results (0: dy, 1: dx)
+        for idx, result in enumerate(results):
+            dy[idx] = result[0]
+            dx[idx] = result[1]
+        return dy, dx
 
 
-def _register_frame(frame, mean_img, upsample_factor=10):
+def _register_frame(frame, mean_img, upsample_factor=1,
+                    max_displacement=None,
+                    return_registered=False):
     """
-    Lloyd Russell 2015
+    Called by _make_mean_img and _register_all_frames
     """
     # compute the offsets
-    shifts = _register_translation(
-        mean_img, frame, upsample_factor=upsample_factor)
+    dy, dx = _register_translation(mean_img, frame,
+                                   upsample_factor=upsample_factor)
 
-    # shift the frame
-    dy, dx = shifts
-    registered_frame = shift(
-        frame, [dy, dx], order=3, mode='constant', cval=0, output=im_dtype)
+    if max_displacement is not None:
+        if dy > max_displacement[0]:
+            dy = max_displacement[0]
+            # dy = 0
+        if dx > max_displacement[1]:
+            dx = max_displacement[1]
+            # dx = 0
 
-    return dx, dy, registered_frame
+    if return_registered:
+        registered_frame = shift(frame,
+                                 [dy, dx],
+                                 order=3,
+                                 mode='constant',
+                                 cval=0,
+                                 output=frame.dtype)
 
-
-def _get_ffts(use_fftw=False, nthreads=1,):
-    """
-    ********************************
-    Modified from image_registration
-    ********************************
-    Decide which fftn and ifftn methods to use. Either use standard numpy
-    or the (slightly) faster fftw (requires PyFFTW3 0.2.1)
-    Parameters
-    ----------
-    use_fftw : bool
-        use FFTW if available? (Default = False)
-    nthreads : int
-        how many threads to use in the returned methods (only relevant
-            for fftw)
-    Returns
-    -------
-    fftn,ifftn : methods
-        the fft methods to use
-    """
-    if use_fftw:
-        try:
-            import fftw3
-
-            def fftn(array, nthreads=1):
-                array = array.astype('complex').copy()
-                outarray = array.copy()
-                fft_forward = fftw3.Plan(array, outarray,
-                                         direction='forward',
-                                         flags=['estimate'],
-                                         nthreads=nthreads)
-                fft_forward.execute()
-                return outarray
-
-            def ifftn(array, nthreads=1):
-                array = array.astype('complex').copy()
-                outarray = array.copy()
-                fft_backward = fftw3.Plan(array, outarray,
-                                          direction='backward',
-                                          flags=['estimate'],
-                                          nthreads=nthreads)
-                fft_backward.execute()
-                return outarray / np.size(array)
-            if verbose_state:
-                print('Using FFTW')
-        except:
-            if verbose_state:
-                print('PyFFTW3 not found!')
-            fftn = np.fft.fftn
-            ifftn = np.fft.ifftn
+        return dy, dx, registered_frame
     else:
-        fftn = np.fft.fftn
-        ifftn = np.fft.ifftn
-
-    return fftn, ifftn
+        return dy, dx
 
 
 def _upsampled_dft(data, upsampled_region_size,
@@ -368,19 +362,20 @@ def _upsampled_dft(data, upsampled_region_size,
     ----------
     data : 2D ndarray
         The input data array (DFT of original data) to upsample.
-    upsampled_region_size : integer or tuple of integers, optional
+    upsampled_region_size : integer or tuple of integers
         The size of the region to be sampled.  If one integer is provided, it
         is duplicated up to the dimensionality of ``data``.
     upsample_factor : integer, optional
-        The upsampling factor.  Defaults to 1.
+        The upsampling factor.  Default: 1.
     axis_offsets : tuple of integers, optional
-        The offsets of the region to be sampled.  Defaults to None (uses
+        The offsets of the region to be sampled.  Default: None (uses
         image center)
     Returns
     -------
     output : 2D ndarray
             The upsampled DFT of the specified region.
     """
+
     # if people pass in an integer, expand it to a list of equal-sized sections
     if not hasattr(upsampled_region_size, "__iter__"):
         upsampled_region_size = [upsampled_region_size, ] * data.ndim
@@ -409,7 +404,8 @@ def _upsampled_dft(data, upsampled_region_size,
             np.floor(data.shape[0] / 2))
     )
 
-    return row_kernel.dot(data).dot(col_kernel)
+    row_kernel_dot = row_kernel.dot(data)
+    return row_kernel_dot.dot(col_kernel)  # hangs here when multiprocessing
 
 
 def _compute_phasediff(cross_correlation_max):
@@ -469,11 +465,11 @@ def _register_translation(src_image, target_image, upsample_factor=1,
         Upsampling factor. Images will be registered to within
         ``1 / upsample_factor`` of a pixel. For example
         ``upsample_factor == 20`` means the images will be registered
-        within 1/20th of a pixel.  Default is 1 (no upsampling)
+        within 1/20th of a pixel.  Default: 1 (no upsampling).
     space : string, one of "real" or "fourier"
         Defines how the algorithm interprets input data.  "real" means data
         will be FFT'd to compute the correlation, while "fourier" data will
-        bypass FFT of input data.  Case insensitive.
+        bypass FFT of input data.  Case insensitive. Default: "real".
     Returns
     -------
     shifts : ndarray
@@ -491,6 +487,7 @@ def _register_translation(src_image, target_image, upsample_factor=1,
            "Efficient subpixel image registration algorithms,"
            Optics Letters 33, 156-158 (2008).
     """
+
     # images must be the same shape
     if src_image.shape != target_image.shape:
         raise ValueError("Error: images must be same size for "
@@ -531,9 +528,10 @@ def _register_translation(src_image, target_image, upsample_factor=1,
     if upsample_factor == 1:
         src_amp = np.sum(np.abs(src_freq) ** 2) / src_freq.size
         target_amp = np.sum(np.abs(target_freq) ** 2) / target_freq.size
-        CCmax = cross_correlation.max()
+        # CCmax = cross_correlation.max()
     # If upsampling > 1, then refine estimate with matrix multiply DFT
     else:
+
         # Initial shift estimate in upsampled grid
         shifts = np.round(shifts * upsample_factor) / upsample_factor
         upsampled_region_size = np.ceil(upsample_factor * 1.5)
@@ -543,10 +541,12 @@ def _register_translation(src_image, target_image, upsample_factor=1,
         normalization = (src_freq.size * upsample_factor ** 2)
         # Matrix multiply DFT around the current shift estimate
         sample_region_offset = dftshift - shifts * upsample_factor
+
         cross_correlation = _upsampled_dft(image_product.conj(),
                                            upsampled_region_size,
                                            upsample_factor,
                                            sample_region_offset).conj()
+
         cross_correlation /= normalization
         # Locate maximum and map back to original pixel grid
         maxima = np.array(np.unravel_index(
@@ -555,7 +555,7 @@ def _register_translation(src_image, target_image, upsample_factor=1,
             dtype=np.float64)
         maxima -= dftshift
         shifts = shifts + maxima / upsample_factor
-        CCmax = cross_correlation.max()
+        # CCmax = cross_correlation.max()
         src_amp = _upsampled_dft(src_freq * src_freq.conj(),
                                  1, upsample_factor)[0, 0]
         src_amp /= normalization
@@ -574,31 +574,33 @@ def _register_translation(src_image, target_image, upsample_factor=1,
     # _compute_phasediff(CCmax)
 
 
-def _save_registered_frames(input_array, save_name, save_fmt):
+def _save_registered_frames(frames, save_name, save_fmt, verbose=False):
     """
-    Save
+    Save. Only use for debugging.
     Parameters
     ----------
     Returns
     -------
     """
-    if verbose_state:
-        print('Saving...')
+    if verbose:
+        print('    Saving...')
     try:  # this is ugly
         import tifffile
     except ImportError:
         try:
             from sima.misc import tifffile
         except ImportError:
-            if verbose_state:
-                print('Cannot find tifffile')
+            if verbose:
+                print('        Cannot find tifffile')
 
     if save_fmt == 'singles':
-        for idx in range(im_dim[0]):
+        for idx in range(frames.shape[0]):
             tifffile.imsave(
                 save_name + '_' + '{number:05d}'.format(number=idx)
-                + '_DFTreg.tif', input_array[idx])
+                + '_DFTreg.tif', frames[idx].astype(np.uint16))
     if save_fmt == 'mptiff':
-        tifffile.imsave(save_name + '_DFTreg.tif', input_array)
+        tifffile.imsave(save_name + '_DFTreg.tif',
+                        frames.astype(np.uint16))
     elif save_fmt == 'bigtiff':
-        tifffile.imsave(save_name + '_DFTreg.tif', input_array, bigtiff=True)
+        tifffile.imsave(save_name + '_DFTreg.tif',
+                        frames.astype(np.uint16), bigtiff=True)
