@@ -10,7 +10,7 @@ python module for image sequence registration
 #### install
 ```
 cd ~
-git clone https://github.com/lloydrussell/dftreg.git
+git clone https://github.com/llerussell/dftreg.git
 cd dftreg
 python setup.py build
 sudo python setup.py install
