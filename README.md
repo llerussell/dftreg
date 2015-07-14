@@ -7,10 +7,20 @@ python module for image sequence registration
 * pyfftw (optional)
 * skimage (for tifffile, optional)
 
+#### install
+```
+cd ~
+git clone https://github.com/lloydrussell/dftreg.git
+cd dftreg
+python setup.py build
+sudo python setup.py install
+cd ~
+```
+
 #### example usage
 ```ruby
-import glob
 import dftreg
+import glob
 from skimage.external import tifffile
 
 
