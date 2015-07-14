@@ -584,23 +584,19 @@ def _save_registered_frames(frames, save_name, save_fmt, verbose=False):
     """
     if verbose:
         print('    Saving...')
-    try:  # this is ugly
-        import tifffile
+    try:
+        from skimage.external import tifffile
+        if save_fmt == 'singles':
+            for idx in range(frames.shape[0]):
+                tifffile.imsave(
+                    save_name + '_' + '{number:05d}'.format(number=idx)
+                    + '_DFTreg.tif', frames[idx].astype(np.uint16))
+        if save_fmt == 'mptiff':
+            tifffile.imsave(save_name + '_DFTreg.tif',
+                            frames.astype(np.uint16))
+        elif save_fmt == 'bigtiff':
+            tifffile.imsave(save_name + '_DFTreg.tif',
+                            frames.astype(np.uint16), bigtiff=True)
     except ImportError:
-        try:
-            from sima.misc import tifffile
-        except ImportError:
-            if verbose:
-                print('        Cannot find tifffile')
-
-    if save_fmt == 'singles':
-        for idx in range(frames.shape[0]):
-            tifffile.imsave(
-                save_name + '_' + '{number:05d}'.format(number=idx)
-                + '_DFTreg.tif', frames[idx].astype(np.uint16))
-    if save_fmt == 'mptiff':
-        tifffile.imsave(save_name + '_DFTreg.tif',
-                        frames.astype(np.uint16))
-    elif save_fmt == 'bigtiff':
-        tifffile.imsave(save_name + '_DFTreg.tif',
-                        frames.astype(np.uint16), bigtiff=True)
+        if verbose:
+            print('        Cannot find tifffile')
