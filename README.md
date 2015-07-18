@@ -37,7 +37,7 @@ first_file = tifffile.imread(file_list[0], multifile=False)
 im_dim = first_file.shape
 im_dtype = first_file.dtype
 
-# make array
+# preallocate array
 raw_frames = np.zeros([num_frames, im_dim[0], im_dim[1]], dtype=im_dtype)
 
 # read frames into array
